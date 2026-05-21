@@ -14,13 +14,16 @@ Env vars (all optional):
 """
 
 import functools
+import hashlib
 import json
 import os
+import shutil
 import socket
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
 from flask import Flask, Response, g, jsonify, render_template, request
@@ -325,6 +328,224 @@ def _clear_config() -> None:
         pass
 
 
+# ─── Disk cache ──────────────────────────────────────────────────────────────
+
+
+class FileCache:
+    """Tiny content-addressed disk cache for thumbnails and originals.
+
+    Layout: under `root/`, every entry is stored as a pair of files
+    `xx/<sha1>.body` (raw bytes) and `xx/<sha1>.ct` (Content-Type, one line).
+    The two-char prefix keeps each directory under a sane file count.
+
+    Eviction: cleanup() walks the tree, deletes anything older than
+    `max_age` seconds, then deletes oldest-first until total size is under
+    `max_bytes` * 0.8 (so we have headroom before the next pass).
+    """
+
+    def __init__(self, root: str, max_age: int, max_bytes: int, max_file_bytes: int):
+        self.root = root
+        self.max_age = max_age
+        self.max_bytes = max_bytes
+        self.max_file_bytes = max_file_bytes
+        os.makedirs(root, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def _paths(self, key: str) -> Tuple[str, str]:
+        h = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        d = os.path.join(self.root, h[:2])
+        base = os.path.join(d, h)
+        return base + ".body", base + ".ct"
+
+    def get(self, key: str) -> Optional[Tuple[str, str]]:
+        body, ct = self._paths(key)
+        try:
+            st = os.stat(body)
+        except FileNotFoundError:
+            return None
+        if time.time() - st.st_mtime > self.max_age:
+            self._unlink(body, ct)
+            return None
+        try:
+            with open(ct, "r") as f:
+                content_type = f.read().strip() or "application/octet-stream"
+        except FileNotFoundError:
+            self._unlink(body, ct)
+            return None
+        # touch for LRU-style retention
+        try:
+            os.utime(body, None)
+        except OSError:
+            pass
+        return content_type, body
+
+    def invalidate(self, key: str) -> None:
+        body, ct = self._paths(key)
+        self._unlink(body, ct)
+
+    def stream_and_cache(
+        self, key: str, content_type: str, chunks: Iterable[bytes]
+    ) -> Iterable[bytes]:
+        """Yield each chunk to the caller while also writing to a temp
+        file. On clean completion, atomic-rename the temp to its cache
+        path. On exception or client disconnect, the temp is removed and
+        nothing pollutes the cache."""
+        body, ct = self._paths(key)
+        os.makedirs(os.path.dirname(body), exist_ok=True)
+        tmp = body + ".tmp"
+        size = 0
+        too_big = False
+        f = None
+        try:
+            f = open(tmp, "wb")
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                if not too_big:
+                    size += len(chunk)
+                    if size > self.max_file_bytes:
+                        # Stop caching this entry — pass-through the rest.
+                        too_big = True
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
+                        f = None
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+                    else:
+                        f.write(chunk)
+                yield chunk
+            if f is not None:
+                f.close()
+                f = None
+                with open(ct, "w") as cf:
+                    cf.write(content_type)
+                os.replace(tmp, body)
+        except (Exception, GeneratorExit):
+            if f is not None:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+
+    def cleanup(self) -> Dict[str, int]:
+        """Apply TTL and size policy. Safe to call concurrently."""
+        with self._lock:
+            now = time.time()
+            entries: List[Tuple[float, int, str]] = []
+            total = 0
+            removed = 0
+            for dirpath, _dirs, files in os.walk(self.root):
+                for name in files:
+                    if not name.endswith(".body"):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    try:
+                        st = os.stat(path)
+                    except OSError:
+                        continue
+                    if now - st.st_mtime > self.max_age:
+                        self._unlink(path, path[:-5] + ".ct")
+                        removed += 1
+                        continue
+                    entries.append((st.st_mtime, st.st_size, path))
+                    total += st.st_size
+            if total > self.max_bytes and entries:
+                target = int(self.max_bytes * 0.8)
+                entries.sort(key=lambda e: e[0])  # oldest first
+                while entries and total > target:
+                    _mt, sz, path = entries.pop(0)
+                    self._unlink(path, path[:-5] + ".ct")
+                    total -= sz
+                    removed += 1
+            return {"files": len(entries), "bytes": total, "removed": removed}
+
+    def stats(self) -> Dict[str, int]:
+        files = 0
+        total = 0
+        for dirpath, _dirs, fnames in os.walk(self.root):
+            for name in fnames:
+                if not name.endswith(".body"):
+                    continue
+                try:
+                    total += os.path.getsize(os.path.join(dirpath, name))
+                    files += 1
+                except OSError:
+                    pass
+        return {"files": files, "bytes": total}
+
+    def clear(self) -> None:
+        with self._lock:
+            shutil.rmtree(self.root, ignore_errors=True)
+            os.makedirs(self.root, exist_ok=True)
+
+    @staticmethod
+    def _unlink(*paths: str) -> None:
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+_cache_lock = threading.Lock()
+_cache: Optional[FileCache] = None
+
+
+def get_cache() -> Optional[FileCache]:
+    """Build the cache lazily on first use."""
+    global _cache
+    if os.environ.get("CACHE_ENABLED", "true").lower() in ("0", "false", "no"):
+        return None
+    if _cache is not None:
+        return _cache
+    with _cache_lock:
+        if _cache is not None:
+            return _cache
+        cache_dir = os.environ.get("CACHE_DIR", os.path.join(CONFIG_DIR, "cache"))
+        max_age = int(os.environ.get("CACHE_MAX_AGE_SECONDS", str(24 * 3600)))
+        max_bytes = int(os.environ.get("CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
+        max_file_bytes = int(os.environ.get("CACHE_MAX_FILE_BYTES", str(200 * 1024 * 1024)))
+        try:
+            _cache = FileCache(cache_dir, max_age, max_bytes, max_file_bytes)
+        except OSError as e:
+            print(f"⚠️  Couldn't create cache at {cache_dir}: {e}", file=sys.stderr)
+            return None
+    return _cache
+
+
+def _cache_cleanup_loop():
+    interval = int(os.environ.get("CACHE_CLEANUP_INTERVAL_SECONDS", "600"))
+    while True:
+        time.sleep(interval)
+        try:
+            c = get_cache()
+            if c is not None:
+                stats = c.cleanup()
+                if stats["removed"]:
+                    print(f"🧹 cache: removed {stats['removed']} files, "
+                          f"now {stats['files']} files / {stats['bytes'] // (1024 * 1024)} MB", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️  cache cleanup error: {e}", file=sys.stderr)
+
+
+def _stream_file(path: str, chunk_size: int = 64 * 1024) -> Iterable[bytes]:
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+
+
 def get_client() -> Optional[ImmichClient]:
     """Lazily build the Immich client from the persisted config."""
     global _client
@@ -556,10 +777,29 @@ def asset_detail(asset_id):
 def asset_thumbnail(asset_id):
     try:
         size = request.args.get("size", "preview")
+        cache = get_cache()
+        key = f"thumb:{asset_id}:{size}"
+        common_headers = {
+            "Cache-Control": "public, max-age=86400",
+        }
+        if cache is not None:
+            hit = cache.get(key)
+            if hit:
+                ct, path = hit
+                return Response(
+                    _stream_file(path),
+                    mimetype=ct,
+                    headers={**common_headers, "X-Cache": "HIT"},
+                )
         upstream = g.client.get_thumbnail(asset_id, size=size)
+        ct = upstream.headers.get("Content-Type", "image/jpeg")
+        chunks = upstream.iter_content(chunk_size=64 * 1024)
+        if cache is not None:
+            chunks = cache.stream_and_cache(key, ct, chunks)
         return Response(
-            upstream.iter_content(chunk_size=8192),
-            mimetype=upstream.headers.get("Content-Type", "image/jpeg"),
+            chunks,
+            mimetype=ct,
+            headers={**common_headers, "X-Cache": "MISS"},
         )
     except Exception as e:
         return _err(e)
@@ -570,22 +810,49 @@ def asset_thumbnail(asset_id):
 def asset_stream(asset_id):
     try:
         range_header = request.headers.get("Range")
+        # Treat "bytes=0-" as a full request — most browsers send this for
+        # the initial video probe but it still gets the entire file.
+        is_full_request = (not range_header) or (range_header.strip() == "bytes=0-")
+        cache = get_cache()
+        key = f"orig:{asset_id}"
+
+        # Cache hit path — only valid for full-content requests.
+        if is_full_request and cache is not None:
+            hit = cache.get(key)
+            if hit:
+                ct, path = hit
+                size = os.path.getsize(path)
+                return Response(
+                    _stream_file(path),
+                    mimetype=ct,
+                    headers={
+                        "Accept-Ranges": "bytes",
+                        "Cache-Control": "public, max-age=86400",
+                        "Content-Length": str(size),
+                        "X-Cache": "HIT",
+                    },
+                )
+
+        # Pass-through (uncached) Range requests + cache-miss full requests.
         upstream = g.client.stream_asset(asset_id, range_header)
         upstream.raise_for_status()
+        ct = upstream.headers.get("Content-Type", "application/octet-stream")
         headers = {
             "Accept-Ranges": "bytes",
-            "Content-Type": upstream.headers.get("Content-Type", "application/octet-stream"),
+            "Content-Type": ct,
+            "Cache-Control": "public, max-age=86400",
         }
         status = upstream.status_code
         if "Content-Length" in upstream.headers:
             headers["Content-Length"] = upstream.headers["Content-Length"]
         if status == 206 and "Content-Range" in upstream.headers:
             headers["Content-Range"] = upstream.headers["Content-Range"]
-        return Response(
-            upstream.iter_content(chunk_size=64 * 1024),
-            status=status,
-            headers=headers,
-        )
+
+        chunks = upstream.iter_content(chunk_size=64 * 1024)
+        if is_full_request and cache is not None and status == 200:
+            chunks = cache.stream_and_cache(key, ct, chunks)
+            headers["X-Cache"] = "MISS"
+        return Response(chunks, status=status, headers=headers)
     except Exception as e:
         return _err(e)
 
@@ -599,6 +866,11 @@ def delete_asset():
         if not asset_id:
             return jsonify({"error": "asset_id required"}), 400
         g.client.delete_assets([asset_id])
+        cache = get_cache()
+        if cache is not None:
+            cache.invalidate(f"orig:{asset_id}")
+            for s in ("thumbnail", "preview", "fullsize"):
+                cache.invalidate(f"thumb:{asset_id}:{s}")
         return jsonify({"success": True})
     except Exception as e:
         return _err(e)
@@ -725,6 +997,35 @@ def healthz():
     return jsonify({"ok": True})
 
 
+# ─── Cache management ────────────────────────────────────────────────────────
+
+
+@app.route("/api/cache/status")
+def cache_status():
+    c = get_cache()
+    if c is None:
+        return jsonify({"enabled": False})
+    stats = c.stats()
+    return jsonify({
+        "enabled": True,
+        "dir": c.root,
+        "files": stats["files"],
+        "bytes": stats["bytes"],
+        "max_bytes": c.max_bytes,
+        "max_file_bytes": c.max_file_bytes,
+        "max_age_seconds": c.max_age,
+    })
+
+
+@app.route("/api/cache", methods=["DELETE"])
+def cache_clear():
+    c = get_cache()
+    if c is None:
+        return jsonify({"enabled": False}), 400
+    c.clear()
+    return jsonify({"success": True})
+
+
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
@@ -748,6 +1049,15 @@ def main():
         print(f"✓ Using configured Immich at {cfg['immich_url']}")
     else:
         print("ℹ️  No Immich credentials yet — open the web UI to run first-time setup.")
+
+    # Boot the cache cleanup thread once the cache is ready.
+    cache = get_cache()
+    if cache is not None:
+        print(f"✓ Disk cache enabled at {cache.root} "
+              f"(max age {cache.max_age // 3600}h, max {cache.max_bytes // (1024 * 1024)} MB)")
+        threading.Thread(target=_cache_cleanup_loop, daemon=True, name="cache-cleanup").start()
+    else:
+        print("ℹ️  Disk cache disabled.")
 
     print("\n" + "=" * 60)
     print("🚀 Taggich starting…")
