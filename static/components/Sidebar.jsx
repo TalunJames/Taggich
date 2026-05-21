@@ -3,6 +3,7 @@
 function Sidebar({ currentAlbumId, onPickAlbum, collapsed, onExpand }) {
   const { state } = useStore();
   const [q, setQ] = React.useState('');
+  const [sort, setSort] = React.useState('updated');
   const albums = state.albums || [];
 
   if (collapsed) {
@@ -30,7 +31,10 @@ function Sidebar({ currentAlbumId, onPickAlbum, collapsed, onExpand }) {
       </aside>
     );
   }
-  const filtered = albums.filter(a => a.name.toLowerCase().includes(q.toLowerCase()));
+  const filtered = sortAlbums(
+    albums.filter(a => a.name.toLowerCase().includes(q.toLowerCase())),
+    sort
+  );
   return (
     <aside className="pane left">
       <div className="pane-hd">
@@ -50,8 +54,9 @@ function Sidebar({ currentAlbumId, onPickAlbum, collapsed, onExpand }) {
         </div>
       </div>
       <div className="pane-body scroll">
-        <div className="sidebar-section section-lbl">
-          <span>Recently updated</span>
+        <div className="sidebar-section section-lbl" style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
+          <span>Sorted by</span>
+          <SortMenu value={sort} onChange={setSort} compact />
         </div>
         <div className="album-list">
           {filtered.map(a => {

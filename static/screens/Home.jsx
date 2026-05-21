@@ -10,15 +10,12 @@ function Home({ onOpenAlbum }) {
   const albums = state.albums || [];
   const tags = state.tags || [];
 
-  const filtered = albums
-    .filter(a => !q || a.name.toLowerCase().includes(q.toLowerCase()))
-    .filter(a => filter === 'untagged' ? (a.statsLoaded && (a.tagged ?? 0) < a.count) : true)
-    .sort((a, b) => {
-      if (sort === 'updated') return (b.updated || '').localeCompare(a.updated || '');
-      if (sort === 'name') return a.name.localeCompare(b.name);
-      if (sort === 'size') return b.count - a.count;
-      return 0;
-    });
+  const filtered = sortAlbums(
+    albums
+      .filter(a => !q || a.name.toLowerCase().includes(q.toLowerCase()))
+      .filter(a => filter === 'untagged' ? (a.statsLoaded && (a.tagged ?? 0) < a.count) : true),
+    sort
+  );
 
   // Only roll up stats from albums that have actually been measured, otherwise
   // the headline percentage shows 0% just because we haven't fetched yet.
@@ -69,9 +66,7 @@ function Home({ onOpenAlbum }) {
               <button key={o.k} aria-current={filter === o.k} onClick={() => setFilter(o.k)}>{o.label}</button>
             ))}
           </div>
-          <button className="btn ghost" onClick={() => setSort(s => s === 'updated' ? 'name' : s === 'name' ? 'size' : 'updated')}>
-            <Icon name="chevD" size={13} /> Sort: {sort}
-          </button>
+          <SortMenu value={sort} onChange={setSort} />
           <div className="seg" role="tablist">
             <button aria-current={view === 'grid'} onClick={() => setView('grid')}><Icon name="grid" size={13} /></button>
             <button aria-current={view === 'rows'} onClick={() => setView('rows')}><Icon name="rows" size={13} /></button>
