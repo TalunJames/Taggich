@@ -4,10 +4,6 @@ A modern web UI for managing tags in your [Immich](https://immich.app) library.
 Browse albums, scrub photos and videos, tag them with ⌘K, and clean up your tag
 list — all backed by your existing Immich API.
 
-> **Heads up if you ever ran the original `Old/` version with the bundled
-> credentials**: that fallback API key was hardcoded and was visible to anyone
-> with read access to this repo. Rotate it from Immich → user settings → API
-> keys before you do anything else.
 
 ---
 
