@@ -15,6 +15,18 @@ const ACCENT_OPTIONS = [
   '#ff7a59', '#7c5cff', '#3ddc97', '#5ab9ff', '#ffd166', '#ff5d8f',
 ];
 
+const THEME_LS_KEY = 'taggich.theme';
+
+function loadInitialTweaks() {
+  try {
+    const saved = localStorage.getItem(THEME_LS_KEY);
+    if (saved === 'dark' || saved === 'light') {
+      return { ...TWEAK_DEFAULTS, theme: saved };
+    }
+  } catch (_) { /* private mode / disabled storage — fall through */ }
+  return TWEAK_DEFAULTS;
+}
+
 function TopNav({ screen, onPick, onOpenPalette, onToggleTheme, onOpenSettings, theme, immichHost }) {
   const { state } = useStore();
   return (
@@ -88,7 +100,13 @@ function FatalError({ message, onRetry, onReconfigure }) {
 }
 
 function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [t, setTweak] = useTweaks(loadInitialTweaks());
+
+  // Persist theme so day/night choice survives reloads. useTweaks only
+  // pushes to the host iframe; standalone runs need explicit storage.
+  React.useEffect(() => {
+    try { localStorage.setItem(THEME_LS_KEY, t.theme); } catch (_) {}
+  }, [t.theme]);
   const { state, actions } = useStore();
   const [screen, setScreen] = React.useState('home');
   const [albumId, setAlbumId] = React.useState(null);

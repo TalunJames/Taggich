@@ -10,6 +10,10 @@ function Thumb({ assetId, seed, kind = 'photo', label, size = 'preview', classNa
     return <PlaceholderImage seed={seed || assetId || 'x'} kind={kind} label={label} />;
   }
   const src = `/api/assets/${assetId}/thumbnail?size=${size}`;
+  // The img stays absolute-positioned and laid out from the start — we fade
+  // it in with opacity instead of toggling display. `loading="lazy"` uses
+  // IntersectionObserver, and elements with display:none have no box, so
+  // they're treated as off-screen and never fetched.
   return (
     <React.Fragment>
       {!loaded && <PlaceholderImage seed={seed || assetId} kind={kind} />}
@@ -21,9 +25,10 @@ function Thumb({ assetId, seed, kind = 'photo', label, size = 'preview', classNa
         onError={() => setFailed(true)}
         className={className}
         style={{
+          position: 'absolute', inset: 0,
           width: '100%', height: '100%', objectFit: 'cover',
-          display: loaded ? 'block' : 'none',
-          position: loaded ? 'absolute' : 'static', inset: 0,
+          opacity: loaded ? 1 : 0,
+          transition: 'opacity 120ms',
         }}
       />
     </React.Fragment>
