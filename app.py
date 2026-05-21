@@ -1,5 +1,5 @@
 """
-Taggich — Immich Tagger backend.
+Taggich — Immich tag manager backend.
 
 Serves the React UI and exposes a JSON API that wraps Immich. Credentials are
 persisted in $CONFIG_DIR/config.json (default /data) so the user enters them
