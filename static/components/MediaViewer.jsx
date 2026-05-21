@@ -245,8 +245,11 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
-          /* Photo — render the img directly in the centered stage so no
-             intermediate container can clip or square-crop it. */
+          /* Photo — absolutely positioned with explicit inset so the box
+             has a mathematically definite size. `max-height: 100%` on an
+             img inside a grid cell whose row is auto-sized is unreliable
+             across browsers (portraits clip), so we use object-fit:contain
+             on a fixed-size box instead. Same pattern the video uses. */
           <img
             key={`${asset.id}:${photoSrc}`}
             src={photoSrc === 'original'
@@ -254,16 +257,16 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
                   : `/api/assets/${asset.id}/thumbnail?size=${photoSrc}`}
             alt={asset.name}
             onError={() => {
-              // Auto-fall-back: original might be HEIC the browser can't decode.
               if (photoSrc === 'original') setPhotoSrc('fullsize');
               else if (photoSrc === 'fullsize') setPhotoSrc('preview');
             }}
             style={{
-              maxWidth: '100%', maxHeight: '100%',
-              width: 'auto', height: 'auto',
-              objectFit: 'contain', display: 'block',
-              borderRadius: 'var(--radius-lg)',
-              boxShadow: '0 30px 80px rgba(0,0,0,.45), 0 0 0 1px var(--border)',
+              position: 'absolute',
+              top: 24, left: 24, right: 24, bottom: 24,
+              objectFit: 'contain',
+              // drop-shadow follows the alpha channel, so it shadows the
+              // letterboxed image content rather than the empty box.
+              filter: 'drop-shadow(0 20px 50px rgba(0,0,0,.45))',
             }}
           />
         )}
