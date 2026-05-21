@@ -104,10 +104,21 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
       if (e.key === 'ArrowLeft') prev();
       if (e.key === 'ArrowRight') next();
       if (e.key === 'f' || e.key === 'F') setFocus(f => !f);
+      if (e.key === 'd' || e.key === 'D') { e.preventDefault(); deleteCurrent(); }
+      if (e.key === ' ') {
+        // Toggle whatever video is currently mounted. There's only one at
+        // a time in the viewer, so a document-wide lookup is fine and
+        // avoids threading a ref up from MediaViewer.
+        const v = document.querySelector('video');
+        if (v) {
+          e.preventDefault();
+          if (v.paused) v.play(); else v.pause();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [next, prev, paletteOpen]);
+  }, [next, prev, paletteOpen, deleteCurrent]);
 
   if (!album) {
     return (
