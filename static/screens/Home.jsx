@@ -12,7 +12,7 @@ function Home({ onOpenAlbum }) {
 
   const filtered = albums
     .filter(a => !q || a.name.toLowerCase().includes(q.toLowerCase()))
-    .filter(a => filter === 'untagged' ? (a.tagged ?? 0) < a.count : true)
+    .filter(a => filter === 'untagged' ? (a.statsLoaded && (a.tagged ?? 0) < a.count) : true)
     .sort((a, b) => {
       if (sort === 'updated') return (b.updated || '').localeCompare(a.updated || '');
       if (sort === 'name') return a.name.localeCompare(b.name);
@@ -20,10 +20,15 @@ function Home({ onOpenAlbum }) {
       return 0;
     });
 
+  // Only roll up stats from albums that have actually been measured, otherwise
+  // the headline percentage shows 0% just because we haven't fetched yet.
+  const measured = albums.filter(a => a.statsLoaded);
   const totalAssets = albums.reduce((s, a) => s + (a.count || 0), 0);
-  const taggedAssets = albums.reduce((s, a) => s + (a.tagged || 0), 0);
-  const untagged = Math.max(0, totalAssets - taggedAssets);
-  const pct = totalAssets ? Math.round((taggedAssets / totalAssets) * 100) : 0;
+  const measuredCount = measured.reduce((s, a) => s + (a.count || 0), 0);
+  const taggedAssets = measured.reduce((s, a) => s + (a.tagged || 0), 0);
+  const untagged = Math.max(0, measuredCount - taggedAssets);
+  const pct = measuredCount ? Math.round((taggedAssets / measuredCount) * 100) : null;
+  const statsLoading = state.loaded && measured.length < albums.length;
 
   return (
     <main className="home">
@@ -38,8 +43,16 @@ function Home({ onOpenAlbum }) {
         <div className="stats">
           <div><span className="v">{albums.length}</span><span className="dim" style={{marginLeft: 4, fontSize: 11}}>albums</span></div>
           <div><span className="v">{totalAssets.toLocaleString()}</span><span className="dim" style={{marginLeft: 4, fontSize: 11}}>assets</span></div>
-          <div><span className="v">{untagged.toLocaleString()}</span><span className="dim" style={{marginLeft: 4, fontSize: 11}}>untagged</span></div>
-          <div><span className="v">{pct}%<span className="u"></span></span><span className="dim" style={{marginLeft: 4, fontSize: 11}}>tagged</span></div>
+          <div>
+            <span className="v">{statsLoading && measured.length === 0 ? '—' : untagged.toLocaleString()}</span>
+            <span className="dim" style={{marginLeft: 4, fontSize: 11}}>untagged</span>
+          </div>
+          <div>
+            <span className="v">{pct === null ? '—' : pct + '%'}<span className="u"></span></span>
+            <span className="dim" style={{marginLeft: 4, fontSize: 11}}>
+              tagged{statsLoading ? ` · scanning ${measured.length}/${albums.length}` : ''}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -77,8 +90,19 @@ function Home({ onOpenAlbum }) {
           {!state.loaded && (
             <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>Loading…</div>
           )}
-          {state.loaded && filtered.length === 0 && !state.loadError && (
-            <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>No albums match.</div>
+          {state.loaded && albums.length === 0 && !state.loadError && (
+            <div style={{gridColumn: '1 / -1', padding: 32, textAlign: 'center', color: 'var(--ink-3)'}}>
+              <div style={{fontSize: 14, marginBottom: 6}}>No albums found in Immich.</div>
+              <div style={{fontSize: 12, color: 'var(--ink-4)'}}>
+                Create one in Immich (Albums → Create Album) and refresh, or pick a different
+                API key with access to your albums.
+              </div>
+            </div>
+          )}
+          {state.loaded && albums.length > 0 && filtered.length === 0 && !state.loadError && (
+            <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>
+              No albums match "{q}". <button className="btn sm ghost" onClick={() => setQ('')} style={{marginLeft: 8}}>Clear filter</button>
+            </div>
           )}
           {filtered.map(a => (
             <AlbumCard key={a.id} album={a} tags={tags} onOpen={() => onOpenAlbum(a.id)} />
@@ -90,26 +114,35 @@ function Home({ onOpenAlbum }) {
 }
 
 function AlbumCard({ album, tags, onOpen }) {
-  const taggedPct = album.count ? Math.round((album.tagged || 0) / album.count * 100) : 0;
+  const measured = album.statsLoaded;
+  const tagged = album.tagged ?? 0;
+  const taggedPct = measured && album.count ? Math.round(tagged / album.count * 100) : 0;
   const dateStr = album.updated
     ? new Date(album.updated).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : '';
   return (
-    <article className="albumcard" onClick={onOpen}>
+    <article className="albumcard" onClick={onOpen} style={{minHeight: 240}}>
       <div className="cover" style={{position: 'relative'}}>
         <Thumb assetId={album.coverAssetId} seed={album.id} label={album.name} />
         <div className="badges">
           <span className="badge">
             <Icon name="picture" size={11} />
-            {album.count.toLocaleString()}
+            {(album.count ?? 0).toLocaleString()}
           </span>
-          {album.tagged < album.count && album.tagged > 0 && (
+          {measured && tagged < album.count && tagged > 0 && (
             <span className="badge" style={{background: 'rgba(255,122,89,.85)', color: '#1a0a04', border: 0}}>
-              {(album.count - album.tagged).toLocaleString()} untagged
+              {(album.count - tagged).toLocaleString()} untagged
+            </span>
+          )}
+          {measured && tagged === 0 && album.count > 0 && (
+            <span className="badge" style={{background: 'rgba(255,122,89,.85)', color: '#1a0a04', border: 0}}>
+              none tagged
             </span>
           )}
         </div>
-        <div className="progress"><div className="fill" style={{width: taggedPct + '%'}}></div></div>
+        {measured && (
+          <div className="progress"><div className="fill" style={{width: taggedPct + '%'}}></div></div>
+        )}
       </div>
       <div className="body">
         <div className="row1">
@@ -117,11 +150,17 @@ function AlbumCard({ album, tags, onOpen }) {
           <span className="when">{dateStr}</span>
         </div>
         <div className="meta">
-          <span>{album.durationDays || 0}d span</span>
-          <span className="pip"></span>
-          <span>{(album.tagged || 0).toLocaleString()} / {album.count.toLocaleString()} tagged</span>
+          {measured ? (
+            <React.Fragment>
+              <span>{album.durationDays || 0}d span</span>
+              <span className="pip"></span>
+              <span>{tagged.toLocaleString()} / {(album.count ?? 0).toLocaleString()} tagged</span>
+            </React.Fragment>
+          ) : (
+            <span style={{color: 'var(--ink-4)'}}>{(album.count ?? 0).toLocaleString()} items · scanning…</span>
+          )}
         </div>
-        {album.recentTags.length > 0 ? (
+        {measured && album.recentTags.length > 0 ? (
           <div className="tagrow">
             {album.recentTags.slice(0, 4).map(tid => {
               const t = tags.find(x => x.id === tid);
@@ -135,8 +174,10 @@ function AlbumCard({ album, tags, onOpen }) {
             })}
             {album.recentTags.length > 4 && <span className="dim">+{album.recentTags.length - 4}</span>}
           </div>
-        ) : (
+        ) : measured ? (
           <div className="tagrow"><span className="dim" style={{fontStyle: 'italic'}}>No tags yet — start here</span></div>
+        ) : (
+          <div className="tagrow"><span className="dim">&nbsp;</span></div>
         )}
       </div>
     </article>

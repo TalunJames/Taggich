@@ -158,6 +158,34 @@ class ImmichClient:
         data = r.json()
         return data.get("assets", {}).get("items", [])
 
+    def search_assets_by_album(self, album_id: str, size: int = 1000) -> List[Dict]:
+        """Use /search/metadata so the returned assets include full tag info.
+
+        The /albums/<id> endpoint in some Immich versions strips per-asset
+        tag arrays, which makes "X% tagged" look like 0% everywhere. The
+        metadata search reliably returns AssetResponseDto with tags.
+        """
+        items: List[Dict] = []
+        page = 1
+        while True:
+            r = self.session.post(
+                f"{self.base_url}/search/metadata",
+                headers=self._headers(),
+                json={"albumIds": [album_id], "size": size, "page": page},
+            )
+            r.raise_for_status()
+            block = r.json().get("assets", {}) or {}
+            chunk = block.get("items", []) or []
+            items.extend(chunk)
+            next_page = block.get("nextPage")
+            if not next_page or len(chunk) < size:
+                break
+            try:
+                page = int(next_page)
+            except (TypeError, ValueError):
+                break
+        return items
+
 
 # ─── Config persistence ─────────────────────────────────────────────────────
 
@@ -363,11 +391,23 @@ def album_detail(album_id):
 @app.route("/api/albums/<album_id>/assets")
 @needs_client
 def album_assets(album_id):
+    """Return album assets with full tag info. Tries /search/metadata first
+    (reliable per-asset tags); falls back to the album endpoint if that
+    isn't available on this Immich version."""
     try:
+        assets = g.client.search_assets_by_album(album_id)
+        if assets:
+            return jsonify(assets)
+        # Empty result from search — fall back to the album endpoint, which
+        # always lists the assets even if it strips some fields.
         data = g.client.get_album(album_id)
         return jsonify(data.get("assets", []))
-    except Exception as e:
-        return _err(e)
+    except Exception:
+        try:
+            data = g.client.get_album(album_id)
+            return jsonify(data.get("assets", []))
+        except Exception as e2:
+            return _err(e2)
 
 
 @app.route("/api/albums/<album_id>/rename", methods=["POST"])

@@ -122,6 +122,12 @@ function App() {
     if (setupStatus === 'ready' && !state.loaded) actions.bootstrap();
   }, [setupStatus]);
 
+  // Once albums are loaded, kick off background stats fetching so Home shows
+  // accurate "X% tagged" counts.
+  React.useEffect(() => {
+    if (state.loaded && state.albums.length > 0) actions.loadAllAlbumStats();
+  }, [state.loaded, state.albums.length]);
+
   React.useEffect(() => {
     if (!albumId && state.albums.length) setAlbumId(state.albums[0].id);
   }, [state.albums.length]);

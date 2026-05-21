@@ -108,12 +108,13 @@ function normalizeAlbum(a) {
     id: a.id,
     name: a.albumName || a.name || 'Untitled album',
     count: a.assetCount ?? (Array.isArray(a.assets) ? a.assets.length : 0),
-    tagged: 0,                          // computed once assets are loaded
+    tagged: null,                       // null = "not loaded yet" (vs 0 = "loaded and none")
     durationDays: 0,                    // ditto
     cover: a.id,                        // placeholder seed if no asset
     coverAssetId: a.albumThumbnailAssetId || null,
     updated: a.updatedAt || a.createdAt || '',
     recentTags: [],                     // computed from assets
+    statsLoaded: false,                 // flipped to true once we've fetched assets
     raw: a,
   };
 }
@@ -213,7 +214,35 @@ function recomputeAlbumDerived(albumId) {
   const recentTags = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(x => x[0]);
   // cover: prefer the album's existing thumbnail asset, otherwise first asset
   const coverAssetId = album.coverAssetId || (list[0] && list[0].id) || null;
-  return {...album, tagged, durationDays, recentTags, coverAssetId};
+  return {...album, tagged, durationDays, recentTags, coverAssetId, statsLoaded: true, count: album.count || list.length};
+}
+
+// Background stat loader — throttled fetch of every album so the Home page
+// shows accurate "X% tagged" rather than 0% on first render.
+let _statsLoading = false;
+async function loadAllAlbumStats({concurrency = 3} = {}) {
+  if (_statsLoading) return;
+  _statsLoading = true;
+  try {
+    const queue = _state.albums.filter(a => !a.statsLoaded).map(a => a.id);
+    let active = 0;
+    let i = 0;
+    await new Promise(resolve => {
+      const tick = () => {
+        if (i >= queue.length && active === 0) return resolve();
+        while (active < concurrency && i < queue.length) {
+          const id = queue[i++];
+          active++;
+          loadAlbumAssets(id, {force: false})
+            .catch(() => {})
+            .finally(() => { active--; tick(); });
+        }
+      };
+      tick();
+    });
+  } finally {
+    _statsLoading = false;
+  }
 }
 
 // ─── Public actions ─────────────────────────────────────────────────────────
@@ -383,7 +412,7 @@ function useStore() {
   return {
     state: snapshot(),
     actions: {
-      bootstrap, loadAlbumAssets, refreshAssetTags,
+      bootstrap, loadAlbumAssets, loadAllAlbumStats, refreshAssetTags,
       applyTagByName, toggleTagById,
       createTag, renameTag, setTagColor, deleteTag, mergeTags,
       deleteAsset, renameAlbum: renameAlbumAction,

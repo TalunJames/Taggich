@@ -22,6 +22,16 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
 
   const asset = assets[assetIdx] || null;
 
+  // When an asset becomes current, refresh its detail in the background so
+  // we always have the latest tag list even if the album response was light.
+  const refreshedRef = React.useRef(new Set());
+  React.useEffect(() => {
+    if (!asset || !albumId) return;
+    if (refreshedRef.current.has(asset.id)) return;
+    refreshedRef.current.add(asset.id);
+    actions.refreshAssetTags(albumId, asset.id);
+  }, [asset && asset.id, albumId]);
+
   const next = React.useCallback(() => {
     if (assets.length === 0) return;
     setAssetIdx(i => (i + 1) % assets.length);

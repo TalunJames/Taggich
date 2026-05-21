@@ -215,25 +215,41 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
 
         {isVideo ? (
           <div className="viewer-frame video">
-            <div style={{position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', background: '#000'}}>
-              <video
-                ref={videoRef}
-                key={asset.id}
-                src={`/api/assets/${asset.id}/stream`}
-                controls={false}
-                preload="metadata"
-                style={{maxWidth: '100%', maxHeight: '100%'}}
-              />
-            </div>
+            <video
+              ref={videoRef}
+              key={asset.id}
+              src={`/api/assets/${asset.id}/stream`}
+              controls={false}
+              preload="metadata"
+              playsInline
+              style={{
+                position: 'absolute', inset: 0,
+                width: '100%', height: '100%',
+                objectFit: 'contain',
+                background: '#000',
+              }}
+            />
             <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
-          <div className="viewer-frame" style={{position: 'relative', aspectRatio: '4 / 3', width: 'min(100%, 1100px)'}}>
+          <div className="viewer-frame" style={{
+            position: 'relative',
+            width: '100%', height: '100%',
+            background: 'transparent',
+            boxShadow: 'none',
+            display: 'grid', placeItems: 'center',
+          }}>
             <img
               key={asset.id}
               src={`/api/assets/${asset.id}/thumbnail?size=preview`}
               alt={asset.name}
-              style={{width: '100%', height: '100%', objectFit: 'contain', display: 'block'}}
+              style={{
+                maxWidth: '100%', maxHeight: '100%',
+                width: 'auto', height: 'auto',
+                objectFit: 'contain', display: 'block',
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: '0 30px 80px rgba(0,0,0,.45), 0 0 0 1px var(--border)',
+              }}
             />
           </div>
         )}
