@@ -1,0 +1,46 @@
+name: taggich
+
+services:
+  taggich:
+    container_name: taggich
+
+    # Pull the prebuilt image from GitHub Container Registry…
+    image: ghcr.io/talunjames/taggich:latest
+    # …or build locally during development:
+    # build: .
+
+    restart: unless-stopped
+
+    ports:
+      # change the left side if 5000 is already in use on the host
+      - "5000:5000"
+
+    volumes:
+      # Holds /data/config.json with your Immich URL + API key.
+      # On TrueNAS Scale, point this at a host path inside your apps dataset,
+      # e.g. /mnt/tank/apps/taggich:/data
+      - taggich_data:/data
+
+    # Optional. If set, these values pre-fill the in-app Setup screen the
+    # first time the container starts (and only then — once you save in the
+    # UI, /data/config.json wins). Safe to leave blank.
+    environment:
+      IMMICH_URL: "${IMMICH_URL:-}"
+      IMMICH_API_KEY: "${IMMICH_API_KEY:-}"
+      # PORT: "5000"
+      # HOST: "0.0.0.0"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      org.opencontainers.image.title: "Taggich"
+      org.opencontainers.image.description: "A modern tag manager for Immich"
+      org.opencontainers.image.source: "https://github.com/TalunJames/Taggich"
+
+volumes:
+  taggich_data:
