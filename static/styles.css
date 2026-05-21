@@ -82,6 +82,11 @@ button { background: none; border: 0; padding: 0; cursor: default; }
 .mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
 .tnum { font-variant-numeric: tabular-nums; }
 
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.85); }
+}
+
 /* ─── App shell ────────────────────────────────────────────────── */
 .app {
   display: grid;

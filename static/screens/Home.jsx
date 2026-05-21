@@ -1,7 +1,7 @@
 // Home — real albums grid + library overview.
 
 function Home({ onOpenAlbum }) {
-  const { state } = useStore();
+  const { state, actions } = useStore();
   const [view, setView] = React.useState('grid');
   const [sort, setSort] = React.useState('updated');
   const [filter, setFilter] = React.useState('all');
@@ -28,7 +28,7 @@ function Home({ onOpenAlbum }) {
   const taggedAssets = measured.reduce((s, a) => s + (a.tagged || 0), 0);
   const untagged = Math.max(0, measuredCount - taggedAssets);
   const pct = measuredCount ? Math.round((taggedAssets / measuredCount) * 100) : null;
-  const statsLoading = state.loaded && measured.length < albums.length;
+  const statsLoading = (state.statsScanning || measured.length < albums.length) && albums.length > 0;
 
   return (
     <main className="home">
@@ -76,10 +76,40 @@ function Home({ onOpenAlbum }) {
             <button aria-current={view === 'grid'} onClick={() => setView('grid')}><Icon name="grid" size={13} /></button>
             <button aria-current={view === 'rows'} onClick={() => setView('rows')}><Icon name="rows" size={13} /></button>
           </div>
-          <button className="btn" onClick={() => window.location.reload()}>
-            <Icon name="refresh" size={13} /> Refresh
+          <button className="btn" onClick={() => actions.loadAllAlbumStats({force: true})}
+                  disabled={state.statsScanning}
+                  title="Re-scan every album for tag counts">
+            <Icon name="refresh" size={13} /> {state.statsScanning ? 'Scanning…' : 'Rescan'}
           </button>
         </div>
+
+        {statsLoading && (
+          <div style={{
+            padding: '8px 36px',
+            background: 'var(--bg-2)',
+            borderBottom: '1px solid var(--border)',
+            color: 'var(--ink-3)',
+            fontSize: 12,
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span className="dot" style={{
+              width: 8, height: 8, borderRadius: 50,
+              background: 'var(--accent)',
+              animation: 'pulse 1.4s ease-in-out infinite',
+              display: 'inline-block',
+            }}></span>
+            Scanning albums for tag counts… {measured.length}/{albums.length} done
+            <span style={{
+              flex: 1, height: 3, background: 'var(--border)', borderRadius: 2, overflow: 'hidden',
+              marginLeft: 12, maxWidth: 240,
+            }}>
+              <span style={{
+                display: 'block', height: '100%', width: ((measured.length / Math.max(1, albums.length)) * 100) + '%',
+                background: 'var(--accent)', transition: 'width 200ms',
+              }}></span>
+            </span>
+          </div>
+        )}
 
         <div className="home-grid scroll">
           {state.loadError && (

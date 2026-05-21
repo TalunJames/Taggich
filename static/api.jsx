@@ -161,6 +161,7 @@ const _state = {
   tags: [],
   albumAssets: {},
   loadingAlbum: null,
+  statsScanning: false,
   toast: null,
 };
 const _listeners = new Set();
@@ -220,28 +221,35 @@ function recomputeAlbumDerived(albumId) {
 // Background stat loader — throttled fetch of every album so the Home page
 // shows accurate "X% tagged" rather than 0% on first render.
 let _statsLoading = false;
-async function loadAllAlbumStats({concurrency = 3} = {}) {
+async function loadAllAlbumStats({concurrency = 3, force = false} = {}) {
   if (_statsLoading) return;
   _statsLoading = true;
+  set({statsScanning: true});
   try {
-    const queue = _state.albums.filter(a => !a.statsLoaded).map(a => a.id);
+    const queue = _state.albums
+      .filter(a => force || !a.statsLoaded)
+      .map(a => a.id);
+    console.info(`[taggich] background stats: ${queue.length} albums queued${force ? ' (force refresh)' : ''}`);
     let active = 0;
     let i = 0;
+    let failed = 0;
     await new Promise(resolve => {
       const tick = () => {
         if (i >= queue.length && active === 0) return resolve();
         while (active < concurrency && i < queue.length) {
           const id = queue[i++];
           active++;
-          loadAlbumAssets(id, {force: false})
-            .catch(() => {})
+          loadAlbumAssets(id, {force})
+            .catch(e => { failed++; console.warn('[taggich] album load failed', id, e); })
             .finally(() => { active--; tick(); });
         }
       };
       tick();
     });
+    console.info(`[taggich] background stats done. ${failed} failed of ${queue.length}.`);
   } finally {
     _statsLoading = false;
+    set({statsScanning: false});
   }
 }
 

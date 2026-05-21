@@ -19,10 +19,16 @@ import os
 import socket
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 import requests
 from flask import Flask, Response, g, jsonify, render_template, request
+
+
+# Tunable via env. Bigger == faster enrichment but more concurrent load on
+# the Immich server.
+ENRICH_WORKERS = int(os.environ.get("ENRICH_WORKERS", "8"))
 
 
 # ─── Immich client ──────────────────────────────────────────────────────────
@@ -157,6 +163,69 @@ class ImmichClient:
         r.raise_for_status()
         data = r.json()
         return data.get("assets", {}).get("items", [])
+
+    # ── tag / cover enrichment helpers ──────────────────────────────────
+
+    @staticmethod
+    def _tags_field_populated(assets: List[Dict]) -> bool:
+        """Return True if at least one asset has the `tags` key.
+
+        We use this to detect Immich responses that have stripped per-asset
+        tag info. A populated `tags: []` still counts (the field exists).
+        Only when the key is completely absent do we treat the response as
+        stripped and need per-asset enrichment.
+        """
+        for a in assets:
+            if isinstance(a, dict) and "tags" in a:
+                return True
+        return False
+
+    def enrich_assets_with_tags(self, assets: List[Dict]) -> List[Dict]:
+        """Fill in `tags` on each asset via parallel /assets/<id> fetches."""
+        ids = [a.get("id") for a in assets if isinstance(a, dict) and a.get("id")]
+        if not ids:
+            return assets
+
+        def fetch_one(aid: str):
+            try:
+                return aid, self.get_asset(aid).get("tags", [])
+            except Exception:
+                return aid, []
+
+        tags_by_id: Dict[str, List] = {}
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as ex:
+            for aid, tags in ex.map(fetch_one, ids):
+                tags_by_id[aid] = tags
+        for a in assets:
+            if isinstance(a, dict) and a.get("id") in tags_by_id:
+                a["tags"] = tags_by_id[a["id"]]
+        return assets
+
+    def enrich_albums_with_covers(self, albums: List[Dict]) -> List[Dict]:
+        """Backfill `albumThumbnailAssetId` for albums missing one by
+        fetching the album's first asset. Parallelised."""
+        need = [a for a in albums if isinstance(a, dict) and not a.get("albumThumbnailAssetId") and a.get("id")]
+        if not need:
+            return albums
+
+        def fetch_cover(album: Dict):
+            try:
+                detail = self.get_album(album["id"])
+                assets = detail.get("assets") or []
+                if assets and isinstance(assets[0], dict):
+                    return album["id"], assets[0].get("id")
+            except Exception:
+                pass
+            return album["id"], None
+
+        cover_by_id: Dict[str, Optional[str]] = {}
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as ex:
+            for aid, cover in ex.map(fetch_cover, need):
+                cover_by_id[aid] = cover
+        for a in albums:
+            if isinstance(a, dict) and not a.get("albumThumbnailAssetId") and cover_by_id.get(a.get("id")):
+                a["albumThumbnailAssetId"] = cover_by_id[a["id"]]
+        return albums
 
     def search_assets_by_album(self, album_id: str, size: int = 1000) -> List[Dict]:
         """Use /search/metadata so the returned assets include full tag info.
@@ -362,7 +431,11 @@ def config_delete():
 @needs_client
 def library():
     try:
-        return jsonify({"albums": g.client.get_albums(), "tags": g.client.get_tags()})
+        albums = g.client.get_albums()
+        # Many albums don't have albumThumbnailAssetId set; backfill from the
+        # first asset so the Home grid shows real thumbnails immediately.
+        g.client.enrich_albums_with_covers(albums)
+        return jsonify({"albums": albums, "tags": g.client.get_tags()})
     except Exception as e:
         return _err(e)
 
@@ -391,23 +464,46 @@ def album_detail(album_id):
 @app.route("/api/albums/<album_id>/assets")
 @needs_client
 def album_assets(album_id):
-    """Return album assets with full tag info. Tries /search/metadata first
-    (reliable per-asset tags); falls back to the album endpoint if that
-    isn't available on this Immich version."""
+    """Return album assets with full tag info.
+
+    Strategy:
+      1. Pull the asset list via /albums/<id>. This is the most consistent
+         Immich endpoint and on most versions already includes per-asset
+         tags.
+      2. If the response strips the `tags` key entirely, fall back to
+         /search/metadata which is sometimes more verbose.
+      3. If tags are STILL missing, fetch each asset's detail in parallel
+         (ENRICH_WORKERS at a time) and merge tags back in. This is the slow
+         path, but it's the only way to guarantee accuracy on Immich
+         versions that strip tags from bulk responses.
+    """
+    enrich = request.args.get("enrich", "true").lower() not in ("0", "false", "no")
+    assets: List[Dict] = []
     try:
-        assets = g.client.search_assets_by_album(album_id)
-        if assets:
-            return jsonify(assets)
-        # Empty result from search — fall back to the album endpoint, which
-        # always lists the assets even if it strips some fields.
-        data = g.client.get_album(album_id)
-        return jsonify(data.get("assets", []))
-    except Exception:
+        assets = g.client.get_album(album_id).get("assets") or []
+    except Exception as e:
+        # If /albums/<id> itself fails, we're in trouble — but let's try search.
         try:
-            data = g.client.get_album(album_id)
-            return jsonify(data.get("assets", []))
-        except Exception as e2:
-            return _err(e2)
+            assets = g.client.search_assets_by_album(album_id)
+        except Exception:
+            return _err(e)
+
+    if assets and not g.client._tags_field_populated(assets):
+        # Try search as a second source before going to per-asset enrichment.
+        try:
+            alt = g.client.search_assets_by_album(album_id)
+            if alt and g.client._tags_field_populated(alt):
+                assets = alt
+        except Exception:
+            pass
+
+    if enrich and assets and not g.client._tags_field_populated(assets):
+        try:
+            g.client.enrich_assets_with_tags(assets)
+        except Exception as e:
+            print(f"⚠️  enrich_assets_with_tags failed: {e}", file=sys.stderr)
+
+    return jsonify(assets)
 
 
 @app.route("/api/albums/<album_id>/rename", methods=["POST"])
