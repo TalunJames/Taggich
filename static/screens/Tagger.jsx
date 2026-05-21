@@ -110,7 +110,7 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
       <section className="pane center">
         {!focus && (
           <div className="pane-hd" style={{padding: '0 16px'}}>
-            <span className="title" style={{fontSize: 13}}>{album.name}</span>
+            <AlbumTitle album={album} onRename={(name) => actions.renameAlbum(album.id, name)} />
             <span className="sub mono">·</span>
             <span className="sub mono">{assetIdx + 1}/{assets.length}</span>
             <span className="sub" style={{marginLeft: 6}}>{asset.name}</span>
@@ -181,4 +181,78 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
   );
 }
 
+// Editable album name. Double-click (or click the small pencil) to rename.
+// Enter saves, Esc reverts.
+function AlbumTitle({ album, onRename }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(album.name);
+  const [saving, setSaving] = React.useState(false);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => { setDraft(album.name); }, [album.name]);
+  React.useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const commit = async () => {
+    const next = draft.trim();
+    if (!next || next === album.name) { setEditing(false); setDraft(album.name); return; }
+    setSaving(true);
+    try {
+      await onRename(next);
+      setEditing(false);
+    } catch (e) {
+      alert('Rename failed: ' + (e.message || e));
+      setDraft(album.name);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const cancel = () => { setDraft(album.name); setEditing(false); };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="input mono"
+        value={draft}
+        disabled={saving}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+        }}
+        style={{
+          height: 26, padding: '0 8px',
+          fontSize: 13, fontFamily: 'var(--font-sans)',
+          minWidth: 200, maxWidth: 460,
+        }}
+      />
+    );
+  }
+  return (
+    <span style={{display: 'inline-flex', alignItems: 'center', gap: 6}}>
+      <span
+        className="title"
+        style={{fontSize: 13, cursor: 'text'}}
+        onDoubleClick={() => setEditing(true)}
+        title="Double-click to rename"
+      >{album.name}</span>
+      <button
+        className="iconbtn"
+        title="Rename album"
+        onClick={() => setEditing(true)}
+        style={{width: 20, height: 20, borderRadius: 5, color: 'var(--ink-4)', display: 'grid', placeItems: 'center'}}
+      >
+        <Icon name="edit" size={11} />
+      </button>
+    </span>
+  );
+}
+
 window.Tagger = Tagger;
+window.AlbumTitle = AlbumTitle;

@@ -169,11 +169,13 @@ function VideoControls({ videoRef, duration }) {
 function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDelete }) {
   const videoRef = React.useRef(null);
   const isVideo = asset && asset.kind === 'video';
-  // Default to the largest browser-friendly preview Immich offers, falling
-  // back through preview/thumbnail on the server. The user can flip to the
-  // original file (untranscoded) via the overlay chip below.
-  const [photoSrc, setPhotoSrc] = React.useState('fullsize');
-  React.useEffect(() => { setPhotoSrc('fullsize'); }, [asset && asset.id]);
+  // Default to the original file. Some Immich versions return a
+  // fixed-aspect (often square) thumbnail for `preview`/`fullsize` even on
+  // portrait photos, which crops the image. The original is the
+  // untranscoded file — for JPEG/PNG that's exactly what the user shot;
+  // for HEIC the browser can't decode it and we auto-fall-back below.
+  const [photoSrc, setPhotoSrc] = React.useState('original');
+  React.useEffect(() => { setPhotoSrc('original'); }, [asset && asset.id]);
 
   if (!asset) {
     return (
@@ -207,9 +209,11 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
           {!isVideo && (
             <button className="viewer-chip"
                     onClick={() => setPhotoSrc(s => s === 'original' ? 'fullsize' : 'original')}
-                    title="Toggle full-resolution original (might not render for HEIC)">
+                    title={photoSrc === 'original'
+                      ? 'Switch to faster preview (may be cropped on some Immich versions)'
+                      : 'Switch back to the original untranscoded file'}>
               <Icon name="picture" size={12} />
-              <span>{photoSrc === 'original' ? 'Preview' : 'Original'}</span>
+              <span>{photoSrc === 'original' ? 'Original' : 'Preview'}</span>
             </button>
           )}
           <button className="viewer-chip" onClick={onToggleFocus}>
