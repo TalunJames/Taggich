@@ -101,10 +101,30 @@ class ImmichClient:
         return self.session.get(url, headers=headers, stream=True)
 
     def get_thumbnail(self, asset_id: str, size: str = "preview") -> requests.Response:
+        """Request a thumbnail at the given size, falling back through the
+        known sizes if Immich rejects the requested one (older versions
+        don't know about `fullsize`)."""
         url = f"{self.base_url}/assets/{asset_id}/thumbnail"
-        r = self.session.get(url, headers=self._headers(), params={"size": size}, stream=True)
-        r.raise_for_status()
-        return r
+        # Order: requested → fullsize → preview → thumbnail. dedupe while
+        # preserving order.
+        seen = set()
+        chain = []
+        for s in (size, "fullsize", "preview", "thumbnail"):
+            if s and s not in seen:
+                seen.add(s)
+                chain.append(s)
+        last_err: Optional[Exception] = None
+        for s in chain:
+            r = self.session.get(url, headers=self._headers(), params={"size": s}, stream=True)
+            if r.status_code == 400 or r.status_code == 422:
+                # Unknown enum value for this Immich version — try the next.
+                last_err = requests.HTTPError(f"Immich rejected size={s}", response=r)
+                continue
+            r.raise_for_status()
+            return r
+        if last_err:
+            raise last_err
+        raise RuntimeError("no thumbnail size succeeded")
 
     # tags
     def get_tags(self) -> List[Dict]:

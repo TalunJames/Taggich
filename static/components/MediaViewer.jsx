@@ -169,6 +169,11 @@ function VideoControls({ videoRef, duration }) {
 function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDelete }) {
   const videoRef = React.useRef(null);
   const isVideo = asset && asset.kind === 'video';
+  // Default to the largest browser-friendly preview Immich offers, falling
+  // back through preview/thumbnail on the server. The user can flip to the
+  // original file (untranscoded) via the overlay chip below.
+  const [photoSrc, setPhotoSrc] = React.useState('fullsize');
+  React.useEffect(() => { setPhotoSrc('fullsize'); }, [asset && asset.id]);
 
   if (!asset) {
     return (
@@ -199,6 +204,14 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             </div>
           )}
           <div style={{flex: 1}}></div>
+          {!isVideo && (
+            <button className="viewer-chip"
+                    onClick={() => setPhotoSrc(s => s === 'original' ? 'fullsize' : 'original')}
+                    title="Toggle full-resolution original (might not render for HEIC)">
+              <Icon name="picture" size={12} />
+              <span>{photoSrc === 'original' ? 'Preview' : 'Original'}</span>
+            </button>
+          )}
           <button className="viewer-chip" onClick={onToggleFocus}>
             <Icon name={focus ? 'rows' : 'fs'} size={12} />
             <span>{focus ? 'Exit focus' : 'Focus mode'}</span>
@@ -232,26 +245,27 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
-          <div className="viewer-frame" style={{
-            position: 'relative',
-            width: '100%', height: '100%',
-            background: 'transparent',
-            boxShadow: 'none',
-            display: 'grid', placeItems: 'center',
-          }}>
-            <img
-              key={asset.id}
-              src={`/api/assets/${asset.id}/thumbnail?size=preview`}
-              alt={asset.name}
-              style={{
-                maxWidth: '100%', maxHeight: '100%',
-                width: 'auto', height: 'auto',
-                objectFit: 'contain', display: 'block',
-                borderRadius: 'var(--radius-lg)',
-                boxShadow: '0 30px 80px rgba(0,0,0,.45), 0 0 0 1px var(--border)',
-              }}
-            />
-          </div>
+          /* Photo — render the img directly in the centered stage so no
+             intermediate container can clip or square-crop it. */
+          <img
+            key={`${asset.id}:${photoSrc}`}
+            src={photoSrc === 'original'
+                  ? `/api/assets/${asset.id}/stream`
+                  : `/api/assets/${asset.id}/thumbnail?size=${photoSrc}`}
+            alt={asset.name}
+            onError={() => {
+              // Auto-fall-back: original might be HEIC the browser can't decode.
+              if (photoSrc === 'original') setPhotoSrc('fullsize');
+              else if (photoSrc === 'fullsize') setPhotoSrc('preview');
+            }}
+            style={{
+              maxWidth: '100%', maxHeight: '100%',
+              width: 'auto', height: 'auto',
+              objectFit: 'contain', display: 'block',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: '0 30px 80px rgba(0,0,0,.45), 0 0 0 1px var(--border)',
+            }}
+          />
         )}
       </div>
 
