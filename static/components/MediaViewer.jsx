@@ -1,5 +1,50 @@
 // MediaViewer — real photos via thumbnail endpoint, real videos via /stream.
 
+const FILMSTRIP_SORT_OPTIONS = [
+  { key: 'default',       label: 'Date taken' },
+  { key: 'videos_first',  label: 'Videos first' },
+  { key: 'photos_first',  label: 'Photos first' },
+  { key: 'duration_desc', label: 'Longest videos' },
+];
+
+// Stable sort: ties fall back to the original album order so the result
+// always feels deterministic. `default` is a no-op (Immich already hands
+// us assets in date-taken order).
+function sortFilmstrip(assets, key) {
+  if (!key || key === 'default') return assets;
+  const origIdx = new Map(assets.map((a, i) => [a.id, i]));
+  const orig = (a) => origIdx.get(a.id) ?? 0;
+  const arr = assets.slice();
+  if (key === 'videos_first') {
+    return arr.sort((a, b) => {
+      const av = a.kind === 'video' ? 0 : 1;
+      const bv = b.kind === 'video' ? 0 : 1;
+      return av - bv || orig(a) - orig(b);
+    });
+  }
+  if (key === 'photos_first') {
+    return arr.sort((a, b) => {
+      const av = a.kind === 'video' ? 1 : 0;
+      const bv = b.kind === 'video' ? 1 : 0;
+      return av - bv || orig(a) - orig(b);
+    });
+  }
+  if (key === 'duration_desc') {
+    // Videos sorted long → short; photos pushed to the end in original order.
+    return arr.sort((a, b) => {
+      const aIsVid = a.kind === 'video';
+      const bIsVid = b.kind === 'video';
+      if (aIsVid && !bIsVid) return -1;
+      if (!aIsVid && bIsVid) return 1;
+      if (aIsVid && bIsVid) {
+        return (b.duration || 0) - (a.duration || 0) || orig(a) - orig(b);
+      }
+      return orig(a) - orig(b);
+    });
+  }
+  return arr;
+}
+
 function formatTime(s) {
   s = Math.max(0, Math.floor(s || 0));
   const m = Math.floor(s / 60);
@@ -166,7 +211,7 @@ function VideoControls({ videoRef, duration }) {
   );
 }
 
-function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDelete }) {
+function MediaViewer({ asset, assets, sort, onSortChange, onPrev, onNext, onToggleFocus, focus, onDelete }) {
   const videoRef = React.useRef(null);
   const isVideo = asset && asset.kind === 'video';
   // Default to the original file. Some Immich versions return a
@@ -314,12 +359,80 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
         )}
       </div>
 
-      <Filmstrip currentId={asset.id} assets={assets} />
+      <Filmstrip currentId={asset.id} assets={assets} sort={sort} onSortChange={onSortChange} />
     </div>
   );
 }
 
-function Filmstrip({ currentId, assets }) {
+function FilmstripSortMenu({ value, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const cur = FILMSTRIP_SORT_OPTIONS.find(o => o.key === value) || FILMSTRIP_SORT_OPTIONS[0];
+  return (
+    <div ref={rootRef} style={{position: 'relative', display: 'inline-flex'}}>
+      <button
+        className="btn sm ghost"
+        onClick={() => setOpen(o => !o)}
+        title="Change filmstrip order"
+        style={{gap: 4, padding: '0 8px', height: 22, fontSize: 11, color: 'var(--ink-3)'}}
+      >
+        <span>Sort: {cur.label}</span>
+        <Icon name="chevD" size={10} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', bottom: 'calc(100% + 4px)', right: 0, zIndex: 50,
+          minWidth: 180,
+          background: 'var(--bg-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          boxShadow: '0 12px 40px rgba(0,0,0,.35)',
+          padding: 4,
+          display: 'flex', flexDirection: 'column',
+        }}>
+          {FILMSTRIP_SORT_OPTIONS.map(opt => {
+            const active = opt.key === value;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => { onChange(opt.key); setOpen(false); }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', borderRadius: 6,
+                  fontSize: 12, color: active ? 'var(--ink)' : 'var(--ink-2)',
+                  background: active ? 'var(--bg-2)' : 'transparent',
+                  textAlign: 'left',
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--bg-2)'; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{width: 12, display: 'inline-flex', justifyContent: 'center'}}>
+                  {active ? <Icon name="check" size={11} stroke={2} /> : null}
+                </span>
+                <span>{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Filmstrip({ currentId, assets, sort, onSortChange }) {
   const scrollRef = React.useRef(null);
   const list = assets || [];
   React.useEffect(() => {
@@ -331,7 +444,11 @@ function Filmstrip({ currentId, assets }) {
     <React.Fragment>
       <div className="filmstrip-hd">
         <span><span className="mono">{Math.max(0, list.findIndex(a => a.id === currentId)) + 1}</span> / <span className="mono">{list.length}</span> in album · use <span className="kbd">←</span> <span className="kbd">→</span> to navigate</span>
-        <span>Sort: Date taken ↑</span>
+        {onSortChange ? (
+          <FilmstripSortMenu value={sort || 'default'} onChange={onSortChange} />
+        ) : (
+          <span>Sort: Date taken</span>
+        )}
       </div>
       <div className="filmstrip scroll" ref={scrollRef}>
         {list.map(a => (
@@ -352,3 +469,4 @@ function Filmstrip({ currentId, assets }) {
 
 window.MediaViewer = MediaViewer;
 window.formatTime = formatTime;
+window.sortFilmstrip = sortFilmstrip;

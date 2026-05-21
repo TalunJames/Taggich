@@ -5,9 +5,16 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
   const [assetIdx, setAssetIdx] = React.useState(0);
   const [focus, setFocus] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [filmstripSort, setFilmstripSort] = React.useState('default');
 
   const album = state.albums.find(a => a.id === albumId);
   const assets = state.albumAssets[albumId] || [];
+  // The filmstrip's display order also drives ← → navigation, so derive
+  // the working list once and use it everywhere downstream.
+  const viewAssets = React.useMemo(
+    () => sortFilmstrip(assets, filmstripSort),
+    [assets, filmstripSort]
+  );
 
   // Load the album's assets on mount / album change.
   React.useEffect(() => {
@@ -17,10 +24,20 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
 
   // Clamp index when asset list changes (e.g. after delete).
   React.useEffect(() => {
-    if (assetIdx >= assets.length && assets.length > 0) setAssetIdx(0);
-  }, [assets.length]);
+    if (assetIdx >= viewAssets.length && viewAssets.length > 0) setAssetIdx(0);
+  }, [viewAssets.length]);
 
-  const asset = assets[assetIdx] || null;
+  const asset = viewAssets[assetIdx] || null;
+
+  // When the user changes the filmstrip sort, keep the currently-selected
+  // asset selected — just look up where it landed in the new order.
+  const onFilmstripSortChange = React.useCallback((next) => {
+    const currentId = viewAssets[assetIdx]?.id;
+    const reordered = sortFilmstrip(assets, next);
+    const idx = currentId ? reordered.findIndex(a => a.id === currentId) : 0;
+    setFilmstripSort(next);
+    setAssetIdx(Math.max(0, idx));
+  }, [assets, viewAssets, assetIdx]);
 
   // When an asset becomes current, refresh its detail in the background so
   // we always have the latest tag list even if the album response was light.
@@ -39,14 +56,14 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
   // time the user hits → the next photo is already in cache. Skipped
   // for videos because their originals can be huge.
   React.useEffect(() => {
-    if (!asset || assets.length < 2) return;
+    if (!asset || viewAssets.length < 2) return;
     const prefetched = new Set();
     const links = [];
     const offsets = [1, 2, 3, -1];
     for (const offset of offsets) {
-      const idx = ((assetIdx + offset) % assets.length + assets.length) % assets.length;
+      const idx = ((assetIdx + offset) % viewAssets.length + viewAssets.length) % viewAssets.length;
       if (idx === assetIdx) continue;
-      const target = assets[idx];
+      const target = viewAssets[idx];
       if (!target || prefetched.has(target.id)) continue;
       if (target.kind === 'video') continue; // skip — too large
       prefetched.add(target.id);
@@ -65,16 +82,16 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
       // Removing the link cancels any pending request.
       for (const l of links) l.remove();
     };
-  }, [asset && asset.id, assetIdx, assets]);
+  }, [asset && asset.id, assetIdx, viewAssets]);
 
   const next = React.useCallback(() => {
-    if (assets.length === 0) return;
-    setAssetIdx(i => (i + 1) % assets.length);
-  }, [assets.length]);
+    if (viewAssets.length === 0) return;
+    setAssetIdx(i => (i + 1) % viewAssets.length);
+  }, [viewAssets.length]);
   const prev = React.useCallback(() => {
-    if (assets.length === 0) return;
-    setAssetIdx(i => (i - 1 + assets.length) % assets.length);
-  }, [assets.length]);
+    if (viewAssets.length === 0) return;
+    setAssetIdx(i => (i - 1 + viewAssets.length) % viewAssets.length);
+  }, [viewAssets.length]);
 
   const toggleTag = React.useCallback((tagId) => {
     if (!asset) return;
@@ -157,7 +174,7 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
           <div className="pane-hd" style={{padding: '0 16px'}}>
             <AlbumTitle album={album} onRename={(name) => actions.renameAlbum(album.id, name)} />
             <span className="sub mono">·</span>
-            <span className="sub mono">{assetIdx + 1}/{assets.length}</span>
+            <span className="sub mono">{assetIdx + 1}/{viewAssets.length}</span>
             <span className="sub" style={{marginLeft: 6}}>{asset.name}</span>
             <div style={{flex: 1}}></div>
             <button className="btn sm ghost" onClick={() => window.open(`/api/assets/${asset.id}/stream`, '_blank')}>
@@ -171,7 +188,9 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
         <div style={{flex: 1, minHeight: 0, display: 'grid'}}>
           <MediaViewer
             asset={asset}
-            assets={assets}
+            assets={viewAssets}
+            sort={filmstripSort}
+            onSortChange={onFilmstripSortChange}
             onNext={next}
             onPrev={prev}
             onToggleFocus={() => setFocus(f => !f)}
