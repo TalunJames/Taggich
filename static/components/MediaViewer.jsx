@@ -249,30 +249,41 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
-          /* Photo — absolutely positioned with explicit inset so the box
-             has a mathematically definite size. `max-height: 100%` on an
-             img inside a grid cell whose row is auto-sized is unreliable
-             across browsers (portraits clip), so we use object-fit:contain
-             on a fixed-size box instead. Same pattern the video uses. */
-          <img
-            key={`${asset.id}:${photoSrc}`}
-            src={photoSrc === 'original'
-                  ? `/api/assets/${asset.id}/stream`
-                  : `/api/assets/${asset.id}/thumbnail?size=${photoSrc}`}
-            alt={asset.name}
-            onError={() => {
-              if (photoSrc === 'original') setPhotoSrc('fullsize');
-              else if (photoSrc === 'fullsize') setPhotoSrc('preview');
-            }}
-            style={{
-              position: 'absolute',
-              top: 24, left: 24, right: 24, bottom: 24,
-              objectFit: 'contain',
-              // drop-shadow follows the alpha channel, so it shadows the
-              // letterboxed image content rather than the empty box.
-              filter: 'drop-shadow(0 20px 50px rgba(0,0,0,.45))',
-            }}
-          />
+          /* Photo — the wrapper is the sized box (a plain div absolute-
+             positioned with inset:24 gets the right dimensions
+             deterministically). The <img> is a *replaced* element and
+             would otherwise ignore inset bounds and render at its
+             intrinsic CSS pixel size; wrapping it lets max-width/max-height
+             100% resolve against the definite wrapper size so any photo —
+             tiny or huge, landscape or portrait — fits. */
+          <div style={{
+            position: 'absolute',
+            top: 24, left: 24, right: 24, bottom: 24,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            <img
+              key={`${asset.id}:${photoSrc}`}
+              src={photoSrc === 'original'
+                    ? `/api/assets/${asset.id}/stream`
+                    : `/api/assets/${asset.id}/thumbnail?size=${photoSrc}`}
+              alt={asset.name}
+              onError={() => {
+                if (photoSrc === 'original') setPhotoSrc('fullsize');
+                else if (photoSrc === 'fullsize') setPhotoSrc('preview');
+              }}
+              style={{
+                maxWidth: '100%',
+                maxHeight: '100%',
+                width: 'auto',
+                height: 'auto',
+                objectFit: 'contain',
+                display: 'block',
+                filter: 'drop-shadow(0 20px 50px rgba(0,0,0,.45))',
+              }}
+            />
+          </div>
         )}
       </div>
 
