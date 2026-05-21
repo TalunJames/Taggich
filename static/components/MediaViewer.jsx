@@ -250,7 +250,7 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
                 background: '#000',
               }}
             />
-            <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
+            <VideoControls key={asset.id} videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
           /* Photo — progressive: render the preview thumbnail (small, fast,
