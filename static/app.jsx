@@ -110,6 +110,12 @@ function App() {
   const { state, actions } = useStore();
   const [screen, setScreen] = React.useState('home');
   const [albumId, setAlbumId] = React.useState(null);
+  // Optional "jump to this asset" hint when opening an album from a
+  // cross-album view (e.g. the longest-videos list). The token bumps on
+  // every pick so Tagger can re-honor it even if the user opens the
+  // same album+asset twice.
+  const [pickedAssetId, setPickedAssetId] = React.useState(null);
+  const [pickToken, setPickToken] = React.useState(0);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
 
   // Setup state.
@@ -162,7 +168,12 @@ function App() {
     document.documentElement.style.setProperty('--right-w', t.rightWidth + 'px');
   }, [t.theme, t.accent, t.leftWidth, t.rightWidth]);
 
-  const onPickAlbum = (id) => { setAlbumId(id); setScreen('tagger'); };
+  const onPickAlbum = (id, assetId = null) => {
+    setAlbumId(id);
+    setPickedAssetId(assetId);
+    setPickToken(n => n + 1);
+    setScreen('tagger');
+  };
 
   const onSetupDone = async () => {
     setShowSetup(false);
@@ -207,6 +218,8 @@ function App() {
           {screen === 'home' && <Home onOpenAlbum={onPickAlbum} />}
           {screen === 'tagger' && (
             <Tagger albumId={albumId}
+                    initialAssetId={pickedAssetId}
+                    pickToken={pickToken}
                     onPickAlbum={(id) => setAlbumId(id)}
                     onOpenTagMgr={() => setScreen('tagmgr')} />
           )}

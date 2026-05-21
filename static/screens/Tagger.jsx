@@ -1,6 +1,6 @@
 // Tagger — 3-pane workspace driven by the live store.
 
-function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
+function Tagger({ albumId, initialAssetId, pickToken, onPickAlbum, onOpenTagMgr }) {
   const { state, actions } = useStore();
   const [assetIdx, setAssetIdx] = React.useState(0);
   const [focus, setFocus] = React.useState(false);
@@ -21,6 +21,20 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
     if (albumId) actions.loadAlbumAssets(albumId);
     setAssetIdx(0);
   }, [albumId]);
+
+  // Honor an explicit asset request from the parent (e.g. clicking a
+  // video in the longest-videos list). We consume it once per pickToken
+  // so the user can navigate away with ← → without snapping back, and
+  // so re-picking the same album+asset still works.
+  const lastConsumedToken = React.useRef(-1);
+  React.useEffect(() => {
+    if (pickToken == null || pickToken === lastConsumedToken.current) return;
+    if (!initialAssetId) { lastConsumedToken.current = pickToken; return; }
+    if (viewAssets.length === 0) return; // wait for assets to arrive
+    const idx = viewAssets.findIndex(a => a.id === initialAssetId);
+    if (idx >= 0) setAssetIdx(idx);
+    lastConsumedToken.current = pickToken;
+  }, [pickToken, initialAssetId, viewAssets]);
 
   // Clamp index when asset list changes (e.g. after delete).
   React.useEffect(() => {

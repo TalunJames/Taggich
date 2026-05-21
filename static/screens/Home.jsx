@@ -6,6 +6,8 @@ function Home({ onOpenAlbum }) {
   const [sort, setSort] = React.useState('updated');
   const [filter, setFilter] = React.useState('all');
   const [q, setQ] = React.useState('');
+  // Cross-album mode: 'albums' (default grid) vs 'longestVideos'.
+  const [mode, setMode] = React.useState('albums');
 
   const albums = state.albums || [];
   const tags = state.tags || [];
@@ -71,6 +73,13 @@ function Home({ onOpenAlbum }) {
             <button aria-current={view === 'grid'} onClick={() => setView('grid')}><Icon name="grid" size={13} /></button>
             <button aria-current={view === 'rows'} onClick={() => setView('rows')}><Icon name="rows" size={13} /></button>
           </div>
+          <button className="btn"
+                  aria-current={mode === 'longestVideos'}
+                  onClick={() => setMode(m => m === 'longestVideos' ? 'albums' : 'longestVideos')}
+                  title="Show every video in the library, longest first">
+            <Icon name="video" size={13} />
+            {mode === 'longestVideos' ? 'Show albums' : 'Longest videos'}
+          </button>
           <button className="btn" onClick={() => actions.loadAllAlbumStats({force: true})}
                   disabled={state.statsScanning}
                   title="Re-scan every album for tag counts">
@@ -106,33 +115,37 @@ function Home({ onOpenAlbum }) {
           </div>
         )}
 
-        <div className="home-grid scroll">
-          {state.loadError && (
-            <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>
-              Couldn't load albums: {state.loadError}
-            </div>
-          )}
-          {!state.loaded && (
-            <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>Loading…</div>
-          )}
-          {state.loaded && albums.length === 0 && !state.loadError && (
-            <div style={{gridColumn: '1 / -1', padding: 32, textAlign: 'center', color: 'var(--ink-3)'}}>
-              <div style={{fontSize: 14, marginBottom: 6}}>No albums found in Immich.</div>
-              <div style={{fontSize: 12, color: 'var(--ink-4)'}}>
-                Create one in Immich (Albums → Create Album) and refresh, or pick a different
-                API key with access to your albums.
+        {mode === 'longestVideos' ? (
+          <LongestVideosList onOpen={onOpenAlbum} />
+        ) : (
+          <div className="home-grid scroll">
+            {state.loadError && (
+              <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>
+                Couldn't load albums: {state.loadError}
               </div>
-            </div>
-          )}
-          {state.loaded && albums.length > 0 && filtered.length === 0 && !state.loadError && (
-            <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>
-              No albums match "{q}". <button className="btn sm ghost" onClick={() => setQ('')} style={{marginLeft: 8}}>Clear filter</button>
-            </div>
-          )}
-          {filtered.map(a => (
-            <AlbumCard key={a.id} album={a} tags={tags} onOpen={() => onOpenAlbum(a.id)} />
-          ))}
-        </div>
+            )}
+            {!state.loaded && (
+              <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>Loading…</div>
+            )}
+            {state.loaded && albums.length === 0 && !state.loadError && (
+              <div style={{gridColumn: '1 / -1', padding: 32, textAlign: 'center', color: 'var(--ink-3)'}}>
+                <div style={{fontSize: 14, marginBottom: 6}}>No albums found in Immich.</div>
+                <div style={{fontSize: 12, color: 'var(--ink-4)'}}>
+                  Create one in Immich (Albums → Create Album) and refresh, or pick a different
+                  API key with access to your albums.
+                </div>
+              </div>
+            )}
+            {state.loaded && albums.length > 0 && filtered.length === 0 && !state.loadError && (
+              <div style={{gridColumn: '1 / -1', padding: 24, color: 'var(--ink-3)'}}>
+                No albums match "{q}". <button className="btn sm ghost" onClick={() => setQ('')} style={{marginLeft: 8}}>Clear filter</button>
+              </div>
+            )}
+            {filtered.map(a => (
+              <AlbumCard key={a.id} album={a} tags={tags} onOpen={() => onOpenAlbum(a.id)} />
+            ))}
+          </div>
+        )}
       </div>
     </main>
   );
@@ -206,6 +219,97 @@ function AlbumCard({ album, tags, onOpen }) {
         )}
       </div>
     </article>
+  );
+}
+
+function LongestVideosList({ onOpen }) {
+  const { state } = useStore();
+  const albums = state.albums || [];
+
+  // Walk every loaded album's asset list and collect videos. Anything
+  // not yet scanned by loadAllAlbumStats simply won't show up — the
+  // progress banner above tells the user when scanning is still going.
+  const videos = React.useMemo(() => {
+    const byAlbumId = new Map(albums.map(a => [a.id, a]));
+    const out = [];
+    for (const [albumId, list] of Object.entries(state.albumAssets || {})) {
+      const album = byAlbumId.get(albumId);
+      if (!album || !Array.isArray(list)) continue;
+      for (const a of list) {
+        if (a.kind !== 'video') continue;
+        out.push({
+          id: a.id,
+          name: a.name,
+          duration: a.duration || 0,
+          taken: a.taken,
+          tagCount: (a.tags || []).length,
+          albumId,
+          albumName: album.name,
+        });
+      }
+    }
+    out.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+    return out;
+  }, [state.albumAssets, state.albums]);
+
+  const scannedAlbums = Object.keys(state.albumAssets || {}).length;
+  const totalAlbums = albums.length;
+  const stillScanning = scannedAlbums < totalAlbums;
+
+  if (!state.loaded) {
+    return <div className="home-grid scroll" style={{padding: 24, color: 'var(--ink-3)'}}>Loading…</div>;
+  }
+
+  if (videos.length === 0) {
+    return (
+      <div className="home-grid scroll" style={{padding: 32, textAlign: 'center', color: 'var(--ink-3)'}}>
+        <div style={{fontSize: 14, marginBottom: 6}}>
+          {stillScanning ? 'Scanning your library for videos…' : 'No videos found in any album.'}
+        </div>
+        <div style={{fontSize: 12, color: 'var(--ink-4)'}}>
+          {stillScanning && `${scannedAlbums}/${totalAlbums} albums scanned. Hang tight.`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="home-grid scroll">
+      {videos.map(v => (
+        <article key={v.id} className="albumcard"
+                 onClick={() => onOpen(v.albumId, v.id)}
+                 style={{minHeight: 200}}>
+          <div className="cover" style={{position: 'relative'}}>
+            <Thumb assetId={v.id} seed={v.id} kind="video" label={v.name} />
+            <div className="badges">
+              <span className="badge" style={{background: 'rgba(0,0,0,.7)', color: '#fff', border: 0, fontVariantNumeric: 'tabular-nums'}}>
+                <Icon name="video" size={11} />
+                {formatTime(v.duration)}
+              </span>
+            </div>
+          </div>
+          <div className="body">
+            <div className="row1">
+              <span className="name" style={{wordBreak: 'break-all'}}>{v.name}</span>
+            </div>
+            <div className="meta">
+              <span>{v.albumName}</span>
+              {v.taken && (
+                <React.Fragment>
+                  <span className="pip"></span>
+                  <span>{v.taken}</span>
+                </React.Fragment>
+              )}
+            </div>
+            <div className="tagrow">
+              <span className="dim">
+                {v.tagCount === 0 ? 'No tags yet' : `${v.tagCount} tag${v.tagCount === 1 ? '' : 's'}`}
+              </span>
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
