@@ -88,7 +88,6 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
 
   const deleteCurrent = React.useCallback(async () => {
     if (!asset) return;
-    if (!confirm(`Delete "${asset.name}"? This removes it from Immich.`)) return;
     await actions.deleteAsset(albumId, asset.id);
   }, [albumId, asset && asset.id]);
 
