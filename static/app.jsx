@@ -123,9 +123,12 @@ function App() {
   }, [setupStatus]);
 
   // Once albums are loaded, kick off background stats fetching so Home shows
-  // accurate "X% tagged" counts.
+  // accurate "X% tagged" counts. Skip if every album already has stats from
+  // the localStorage cache — there's nothing to scan.
   React.useEffect(() => {
-    if (state.loaded && state.albums.length > 0) actions.loadAllAlbumStats();
+    if (!state.loaded || state.albums.length === 0) return;
+    const unmeasured = state.albums.some(a => !a.statsLoaded);
+    if (unmeasured) actions.loadAllAlbumStats();
   }, [state.loaded, state.albums.length]);
 
   React.useEffect(() => {

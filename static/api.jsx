@@ -103,8 +103,8 @@ function normalizeAsset(a) {
   };
 }
 
-function normalizeAlbum(a) {
-  return {
+function normalizeAlbum(a, cachedStats) {
+  const norm = {
     id: a.id,
     name: a.albumName || a.name || 'Untitled album',
     count: a.assetCount ?? (Array.isArray(a.assets) ? a.assets.length : 0),
@@ -117,6 +117,57 @@ function normalizeAlbum(a) {
     statsLoaded: false,                 // flipped to true once we've fetched assets
     raw: a,
   };
+  // Apply any saved stats from a previous session, but only if the album
+  // hasn't been updated since the cache snapshot (i.e. Immich's updatedAt
+  // is the same or older).
+  const c = cachedStats && cachedStats[a.id];
+  if (c && (!norm.updated || (c.albumUpdated && c.albumUpdated >= norm.updated))) {
+    norm.tagged = c.tagged ?? norm.tagged;
+    norm.durationDays = c.durationDays ?? norm.durationDays;
+    norm.recentTags = c.recentTags || [];
+    norm.coverAssetId = norm.coverAssetId || c.coverAssetId || null;
+    norm.statsLoaded = true;
+  }
+  return norm;
+}
+
+// ─── Persistent stats cache (localStorage) ─────────────────────────────────
+const STATS_LS_KEY = 'taggich:album-stats:v1';
+const STATS_LS_MAX_AGE_MS = 30 * 60 * 1000;   // 30 minutes
+
+function loadPersistedStats() {
+  try {
+    const raw = localStorage.getItem(STATS_LS_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return null;
+    if (Date.now() - (data.ts || 0) > STATS_LS_MAX_AGE_MS) return null;
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function persistStats() {
+  try {
+    const stats = {};
+    for (const a of _state.albums) {
+      if (!a.statsLoaded) continue;
+      stats[a.id] = {
+        tagged: a.tagged,
+        durationDays: a.durationDays,
+        recentTags: a.recentTags || [],
+        coverAssetId: a.coverAssetId || null,
+        albumUpdated: a.updated,
+      };
+    }
+    localStorage.setItem(STATS_LS_KEY, JSON.stringify({
+      ts: Date.now(),
+      stats,
+    }));
+  } catch (e) {
+    // localStorage quota / private mode — non-fatal
+  }
 }
 
 // ─── Fetch helpers ──────────────────────────────────────────────────────────
@@ -247,6 +298,7 @@ async function loadAllAlbumStats({concurrency = 3, force = false} = {}) {
       tick();
     });
     console.info(`[taggich] background stats done. ${failed} failed of ${queue.length}.`);
+    persistStats();
   } finally {
     _statsLoading = false;
     set({statsScanning: false});
@@ -257,12 +309,20 @@ async function loadAllAlbumStats({concurrency = 3, force = false} = {}) {
 
 async function bootstrap() {
   if (_state.loaded) return;
+  // Restore previous-session tag counts so the Home grid paints with
+  // real percentages immediately rather than "scanning…" for everything.
+  const persisted = loadPersistedStats();
   try {
     const data = await api.bootstrap();
-    const albums = (data.albums || []).map(normalizeAlbum)
+    const albums = (data.albums || [])
+      .map(a => normalizeAlbum(a, persisted && persisted.stats))
       .sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
     const tags = (data.tags || []).map(normalizeTag).sort((a, b) => a.name.localeCompare(b.name));
     set({loaded: true, albums, tags, loadError: null});
+    if (persisted) {
+      const restored = albums.filter(a => a.statsLoaded).length;
+      if (restored) console.info(`[taggich] restored stats for ${restored}/${albums.length} albums from cache`);
+    }
   } catch (e) {
     set({loaded: true, loadError: e.message || String(e)});
   }
@@ -299,6 +359,7 @@ async function refreshAssetTags(albumId, assetId) {
     const updated = recomputeAlbumDerived(albumId);
     const albums = updated ? _state.albums.map(a => a.id === albumId ? updated : a) : _state.albums;
     set({albumAssets: _state.albumAssets, tags, albums});
+    persistStats();
     return norm;
   } catch (e) {
     set({toast: 'Failed to refresh asset: ' + e.message});

@@ -175,7 +175,11 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
   // untranscoded file — for JPEG/PNG that's exactly what the user shot;
   // for HEIC the browser can't decode it and we auto-fall-back below.
   const [photoSrc, setPhotoSrc] = React.useState('original');
-  React.useEffect(() => { setPhotoSrc('original'); }, [asset && asset.id]);
+  const [originalLoaded, setOriginalLoaded] = React.useState(false);
+  React.useEffect(() => {
+    setPhotoSrc('original');
+    setOriginalLoaded(false);
+  }, [asset && asset.id]);
 
   if (!asset) {
     return (
@@ -249,13 +253,11 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             <VideoControls videoRef={videoRef} duration={asset.duration || 60} />
           </div>
         ) : (
-          /* Photo — the wrapper is the sized box (a plain div absolute-
-             positioned with inset:24 gets the right dimensions
-             deterministically). The <img> is a *replaced* element and
-             would otherwise ignore inset bounds and render at its
-             intrinsic CSS pixel size; wrapping it lets max-width/max-height
-             100% resolve against the definite wrapper size so any photo —
-             tiny or huge, landscape or portrait — fits. */
+          /* Photo — progressive: render the preview thumbnail (small, fast,
+             usually already in the browser cache because the filmstrip
+             pulled it) immediately, then fade in the original when it
+             loads. Wrapper has a definite size; img inside uses
+             max-width/max-height 100% which then resolves correctly. */
           <div style={{
             position: 'absolute',
             top: 24, left: 24, right: 24, bottom: 24,
@@ -263,17 +265,40 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
             alignItems: 'center',
             justifyContent: 'center',
           }}>
+            {/* Placeholder: the preview thumbnail. Hidden once the
+                original/fullsize is loaded. Skipped when the user has
+                explicitly switched to a non-original src. */}
+            {photoSrc === 'original' && !originalLoaded && (
+              <img
+                key={`preview-${asset.id}`}
+                src={`/api/assets/${asset.id}/thumbnail?size=preview`}
+                alt=""
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  maxWidth: '100%', maxHeight: '100%',
+                  width: 'auto', height: 'auto',
+                  objectFit: 'contain', display: 'block',
+                  filter: 'drop-shadow(0 20px 50px rgba(0,0,0,.45)) blur(1px)',
+                  transition: 'opacity 200ms',
+                  opacity: 0.9,
+                }}
+              />
+            )}
             <img
               key={`${asset.id}:${photoSrc}`}
               src={photoSrc === 'original'
                     ? `/api/assets/${asset.id}/stream`
                     : `/api/assets/${asset.id}/thumbnail?size=${photoSrc}`}
               alt={asset.name}
+              onLoad={() => setOriginalLoaded(true)}
               onError={() => {
                 if (photoSrc === 'original') setPhotoSrc('fullsize');
                 else if (photoSrc === 'fullsize') setPhotoSrc('preview');
+                setOriginalLoaded(true);
               }}
               style={{
+                position: 'relative',
                 maxWidth: '100%',
                 maxHeight: '100%',
                 width: 'auto',
@@ -281,6 +306,8 @@ function MediaViewer({ asset, assets, onPrev, onNext, onToggleFocus, focus, onDe
                 objectFit: 'contain',
                 display: 'block',
                 filter: 'drop-shadow(0 20px 50px rgba(0,0,0,.45))',
+                opacity: photoSrc !== 'original' || originalLoaded ? 1 : 0,
+                transition: 'opacity 180ms',
               }}
             />
           </div>

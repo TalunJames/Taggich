@@ -33,6 +33,12 @@ from flask import Flask, Response, g, jsonify, render_template, request
 # the Immich server.
 ENRICH_WORKERS = int(os.environ.get("ENRICH_WORKERS", "8"))
 
+# How long to keep cheap JSON responses in-memory before refetching from
+# Immich. Set to 0 to disable.
+MEM_TTL_LIBRARY = float(os.environ.get("MEM_TTL_LIBRARY_SECONDS", "60"))      # 1 min
+MEM_TTL_ALBUM_ASSETS = float(os.environ.get("MEM_TTL_ALBUM_ASSETS_SECONDS", "300"))  # 5 min
+MEM_TTL_ASSET = float(os.environ.get("MEM_TTL_ASSET_SECONDS", "30"))          # 30 sec
+
 
 # ─── Immich client ──────────────────────────────────────────────────────────
 
@@ -496,6 +502,55 @@ class FileCache:
                 pass
 
 
+class MemoryCache:
+    """Thread-safe TTL'd in-memory cache for cheap JSON responses.
+
+    Used for the bulky bootstrap calls (/api/library, /api/albums/.../assets)
+    so a page reload doesn't pay the full Immich round-trip again. Write
+    routes invalidate by prefix to keep things fresh after a tag/delete.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: Dict[str, Tuple[float, object]] = {}
+
+    def get(self, key: str):
+        with self._lock:
+            entry = self._entries.get(key)
+            if not entry:
+                return None
+            expiry, value = entry
+            if time.time() > expiry:
+                self._entries.pop(key, None)
+                return None
+            return value
+
+    def set(self, key: str, value, ttl: float) -> None:
+        with self._lock:
+            self._entries[key] = (time.time() + ttl, value)
+
+    def invalidate(self, key: str) -> None:
+        with self._lock:
+            self._entries.pop(key, None)
+
+    def invalidate_prefix(self, prefix: str) -> None:
+        with self._lock:
+            for k in list(self._entries.keys()):
+                if k.startswith(prefix):
+                    del self._entries[k]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def stats(self) -> Dict[str, int]:
+        with self._lock:
+            return {"entries": len(self._entries)}
+
+
+_mem_cache = MemoryCache()
+
+
 _cache_lock = threading.Lock()
 _cache: Optional[FileCache] = None
 
@@ -671,12 +726,20 @@ def config_delete():
 @app.route("/api/library")
 @needs_client
 def library():
+    cache_key = "library"
+    if MEM_TTL_LIBRARY > 0:
+        cached = _mem_cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
     try:
         albums = g.client.get_albums()
         # Many albums don't have albumThumbnailAssetId set; backfill from the
         # first asset so the Home grid shows real thumbnails immediately.
         g.client.enrich_albums_with_covers(albums)
-        return jsonify({"albums": albums, "tags": g.client.get_tags()})
+        data = {"albums": albums, "tags": g.client.get_tags()}
+        if MEM_TTL_LIBRARY > 0:
+            _mem_cache.set(cache_key, data, MEM_TTL_LIBRARY)
+        return jsonify(data)
     except Exception as e:
         return _err(e)
 
@@ -719,6 +782,14 @@ def album_assets(album_id):
          versions that strip tags from bulk responses.
     """
     enrich = request.args.get("enrich", "true").lower() not in ("0", "false", "no")
+    # Per-album memory cache. Key includes the enrich flag because the two
+    # variants differ in payload.
+    cache_key = f"album_assets:{album_id}:enrich={enrich}"
+    if MEM_TTL_ALBUM_ASSETS > 0:
+        cached = _mem_cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
     assets: List[Dict] = []
     try:
         assets = g.client.get_album(album_id).get("assets") or []
@@ -744,6 +815,8 @@ def album_assets(album_id):
         except Exception as e:
             print(f"⚠️  enrich_assets_with_tags failed: {e}", file=sys.stderr)
 
+    if MEM_TTL_ALBUM_ASSETS > 0:
+        _mem_cache.set(cache_key, assets, MEM_TTL_ALBUM_ASSETS)
     return jsonify(assets)
 
 
@@ -755,7 +828,9 @@ def rename_album(album_id):
         new_name = payload.get("new_name") or payload.get("name")
         if not new_name:
             return jsonify({"error": "new_name required"}), 400
-        return jsonify({"success": True, "album": g.client.rename_album(album_id, new_name)})
+        result = g.client.rename_album(album_id, new_name)
+        _mem_cache.invalidate("library")
+        return jsonify({"success": True, "album": result})
     except Exception as e:
         return _err(e)
 
@@ -766,8 +841,16 @@ def rename_album(album_id):
 @app.route("/api/assets/<asset_id>")
 @needs_client
 def asset_detail(asset_id):
+    cache_key = f"asset:{asset_id}"
+    if MEM_TTL_ASSET > 0:
+        cached = _mem_cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
     try:
-        return jsonify(g.client.get_asset(asset_id))
+        data = g.client.get_asset(asset_id)
+        if MEM_TTL_ASSET > 0:
+            _mem_cache.set(cache_key, data, MEM_TTL_ASSET)
+        return jsonify(data)
     except Exception as e:
         return _err(e)
 
@@ -871,6 +954,8 @@ def delete_asset():
             cache.invalidate(f"orig:{asset_id}")
             for s in ("thumbnail", "preview", "fullsize"):
                 cache.invalidate(f"thumb:{asset_id}:{s}")
+        _invalidate_asset_caches(asset_id)
+        _mem_cache.invalidate("library")  # asset counts changed
         return jsonify({"success": True})
     except Exception as e:
         return _err(e)
@@ -896,7 +981,9 @@ def create_tag():
         name = (payload.get("name") or "").strip()
         if not name:
             return jsonify({"error": "name required"}), 400
-        return jsonify(g.client.create_tag(name=name, color=payload.get("color")))
+        tag = g.client.create_tag(name=name, color=payload.get("color"))
+        _mem_cache.invalidate("library")
+        return jsonify(tag)
     except Exception as e:
         return _err(e)
 
@@ -906,7 +993,10 @@ def create_tag():
 def update_tag(tag_id):
     try:
         payload = request.get_json(force=True) or {}
-        return jsonify(g.client.update_tag(tag_id, name=payload.get("name"), color=payload.get("color")))
+        tag = g.client.update_tag(tag_id, name=payload.get("name"), color=payload.get("color"))
+        _mem_cache.invalidate("library")
+        _mem_cache.invalidate_prefix("album_assets:")
+        return jsonify(tag)
     except Exception as e:
         return _err(e)
 
@@ -916,6 +1006,8 @@ def update_tag(tag_id):
 def delete_tag(tag_id):
     try:
         g.client.delete_tag(tag_id)
+        _mem_cache.invalidate("library")
+        _mem_cache.invalidate_prefix("album_assets:")
         return jsonify({"success": True})
     except Exception as e:
         return _err(e)
@@ -946,6 +1038,10 @@ def merge_tag(src_id):
         if asset_ids:
             g.client.tag_assets(into_id, asset_ids)
         g.client.delete_tag(src_id)
+        _mem_cache.invalidate("library")
+        _mem_cache.invalidate_prefix("album_assets:")
+        for aid in asset_ids:
+            _mem_cache.invalidate(f"asset:{aid}")
         return jsonify({"success": True, "moved": len(asset_ids)})
     except Exception as e:
         return _err(e)
@@ -968,6 +1064,7 @@ def tag_asset_endpoint():
         match = next((t for t in all_tags if t["name"].lower() == tag_name.lower()), None)
         tag = match if match else g.client.create_tag(tag_name, color=color)
         g.client.tag_assets(tag["id"], [asset_id])
+        _invalidate_asset_caches(asset_id, created_tag=not match)
         return jsonify({"success": True, "tag": tag})
     except Exception as e:
         return _err(e)
@@ -983,9 +1080,22 @@ def untag_asset_endpoint():
         if not asset_id or not tag_id:
             return jsonify({"error": "asset_id and tag_id required"}), 400
         g.client.untag_assets(tag_id, [asset_id])
+        _invalidate_asset_caches(asset_id)
         return jsonify({"success": True})
     except Exception as e:
         return _err(e)
+
+
+def _invalidate_asset_caches(asset_id: str, created_tag: bool = False) -> None:
+    """Clear memory cache entries that could be affected by a tag change."""
+    _mem_cache.invalidate(f"asset:{asset_id}")
+    # Album-asset caches embed full asset dicts (with tags). Without an
+    # asset→album mapping handy here, we conservatively flush every cached
+    # album asset list. They're cheap to rebuild.
+    _mem_cache.invalidate_prefix("album_assets:")
+    if created_tag:
+        # A new tag means the bootstrap response changes.
+        _mem_cache.invalidate("library")
 
 
 # ─── Healthcheck ─────────────────────────────────────────────────────────────
@@ -1003,26 +1113,36 @@ def healthz():
 @app.route("/api/cache/status")
 def cache_status():
     c = get_cache()
+    out = {
+        "memory": _mem_cache.stats(),
+        "memory_ttl_seconds": {
+            "library": MEM_TTL_LIBRARY,
+            "album_assets": MEM_TTL_ALBUM_ASSETS,
+            "asset": MEM_TTL_ASSET,
+        },
+    }
     if c is None:
-        return jsonify({"enabled": False})
-    stats = c.stats()
-    return jsonify({
-        "enabled": True,
-        "dir": c.root,
-        "files": stats["files"],
-        "bytes": stats["bytes"],
-        "max_bytes": c.max_bytes,
-        "max_file_bytes": c.max_file_bytes,
-        "max_age_seconds": c.max_age,
-    })
+        out["disk"] = {"enabled": False}
+    else:
+        stats = c.stats()
+        out["disk"] = {
+            "enabled": True,
+            "dir": c.root,
+            "files": stats["files"],
+            "bytes": stats["bytes"],
+            "max_bytes": c.max_bytes,
+            "max_file_bytes": c.max_file_bytes,
+            "max_age_seconds": c.max_age,
+        }
+    return jsonify(out)
 
 
 @app.route("/api/cache", methods=["DELETE"])
 def cache_clear():
+    _mem_cache.clear()
     c = get_cache()
-    if c is None:
-        return jsonify({"enabled": False}), 400
-    c.clear()
+    if c is not None:
+        c.clear()
     return jsonify({"success": True})
 
 
