@@ -32,6 +32,41 @@ function Tagger({ albumId, onPickAlbum, onOpenTagMgr }) {
     actions.refreshAssetTags(albumId, asset.id);
   }, [asset && asset.id, albumId]);
 
+  // Forward-prefetch: when viewing asset N, ask the browser to start
+  // pulling N+1..N+3 (and N-1 for back-button) in the background. The
+  // server's Cache-Control headers let the browser store them; the
+  // server's disk cache also gets warmed up as a side effect. By the
+  // time the user hits → the next photo is already in cache. Skipped
+  // for videos because their originals can be huge.
+  React.useEffect(() => {
+    if (!asset || assets.length < 2) return;
+    const prefetched = new Set();
+    const links = [];
+    const offsets = [1, 2, 3, -1];
+    for (const offset of offsets) {
+      const idx = ((assetIdx + offset) % assets.length + assets.length) % assets.length;
+      if (idx === assetIdx) continue;
+      const target = assets[idx];
+      if (!target || prefetched.has(target.id)) continue;
+      if (target.kind === 'video') continue; // skip — too large
+      prefetched.add(target.id);
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = `/api/assets/${target.id}/stream`;
+      link.as = 'image';
+      link.crossOrigin = 'anonymous';
+      document.head.appendChild(link);
+      links.push(link);
+    }
+    if (links.length) {
+      console.info(`[taggich] prefetching ${links.length} asset(s) ahead`);
+    }
+    return () => {
+      // Removing the link cancels any pending request.
+      for (const l of links) l.remove();
+    };
+  }, [asset && asset.id, assetIdx, assets]);
+
   const next = React.useCallback(() => {
     if (assets.length === 0) return;
     setAssetIdx(i => (i + 1) % assets.length);
